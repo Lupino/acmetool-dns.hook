@@ -25,6 +25,8 @@
 #
 # Modify TOKEN.
 #
+# pip3 install dnspod-sdk
+#
 # Invoke with `./dns.hook test yourdomain.tld` to test.
 #
 # Then copy/move to hooks dir of acmetool (e.g., /usr/lib/acme/hooks).

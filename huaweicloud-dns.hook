@@ -9,7 +9,7 @@ import time
 
 # Usage:
 #
-# Modify EMAIL and PASSWD.
+# pip3 install huaweicloud-sdk-pyhton
 #
 # Invoke with `./dns.hook test yourdomain.tld` to test.
 #
