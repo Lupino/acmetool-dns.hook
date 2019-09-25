@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+
+# Copyright 2016 Li Meng Jun <lmjubuntu@gmail.com>
+
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+# Usage:
+#
+# Modify TOKEN.
+#
+# Invoke with `./dns.hook test yourdomain.tld` to test.
+#
+# Then copy/move to hooks dir of acmetool (e.g., /usr/lib/acme/hooks).
+
+import requests
+import signal
+import subprocess
+import sys
+import time
+
+LOGIN_TOKEN=''
+
+TIMEOUT = 60
+
+from dnspod.base import BaseAPI
+from dnspod.domain import DomainAPI
+from dnspod.record import Record, RecordAPI
+
+name_servers = [
+    'f1g1ns2.dnspod.net',
+    'f1g1ns1.dnspod.net'
+]
+
+bapi = BaseAPI(login_token=LOGIN_TOKEN)
+dapi = DomainAPI(bapi)
+rapi = RecordAPI(bapi)
+
+def get_domain_info(domain_name):
+    try:
+        return ('', dapi.info(domain = domain_name))
+    except:
+        domain_name = domain_name.split('.')
+        sub = domain_name[0]
+        sub1, domain = get_domain_info('.'.join(domain_name[1:]))
+        if sub1:
+            sub = '%s.%s'%(sub, sub1)
+        return sub, domain
+
+
+def get_record_info(domain_id, sub_domain, token):
+    record_name = challenge_record(domain_id, sub_domain, token)['sub_domain']
+    records = rapi.list(domain_id)
+
+    for record in records:
+        if record.sub_domain == record_name:
+            return record
+
+# Construct DNS challenge record.
+def challenge_record(domain, sub_domain, token):
+    ch = '_acme-challenge'
+    if sub_domain:
+        ch = '%s.%s'%(ch, sub_domain)
+    return dict(
+        domain_id=domain.id,
+        domain=domain.name,
+        domain_grade='DP_Free',
+        sub_domain=ch,
+        record_type='TXT',
+        record_line='默认',
+        value=token
+    )
+
+# Create record.
+def add_challenge(domain, sub_domain, token):
+    return Record(bapi.do_post('Record.Create', **challenge_record(domain, sub_domain, token)).get('record', {}))
+
+# Delete record.
+def del_challenge(domain_id, record_id):
+    return bapi.do_post('Record.Remove', domain_id=domain_id, record_id=record_id)
+
+# Timeout using SIGALARM.
+# https://stackoverflow.com/a/22348885
+class timeout:
+    def __init__(self, seconds=1, error_message='Timeout'):
+        self.seconds = seconds
+        self.error_message = error_message
+    def handle_timeout(self, signum, frame):
+        raise TimeoutError(self.error_message)
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, self.handle_timeout)
+        signal.alarm(self.seconds)
+    def __exit__(self, type, value, traceback):
+        signal.alarm(0)
+
+def wait_for_challenge_at(ns, vdomain, token, verbose=False):
+    cmd = 'dig +short @{} txt {}'.format(ns, vdomain)
+    while True:
+        time.sleep(1)
+        if verbose: print(cmd)
+        output = subprocess.check_output(cmd, shell=True).decode()
+        if token in output:
+            return
+
+# Wait for correct validation record to show up on all authoritative nameservers.
+def wait_challenge(domain, sub_domain, token, verbose=False):
+    vdomain = challenge_record(domain.id, sub_domain, token)['sub_domain'] + '.' + domain.name + '.'
+    for ns in name_servers:
+        wait_for_challenge_at(ns, vdomain, token, verbose)
+
+def test(domain_name):
+    print('Get domain info for:', domain_name)
+    sub, domain = get_domain_info(domain_name)
+    token = time.strftime('%Y%m%d %H:%M:%S')
+    print('Using token:', token)
+    print('Add record', challenge_record(domain.id, sub, token))
+    record = add_challenge(domain, sub, token)
+    print(record)
+    print('Add record ok')
+    try:
+        print('Wait for record')
+        with timeout(TIMEOUT):
+            wait_challenge(domain, sub, token, verbose=True)
+        print('Record is on all nameservers')
+    finally:
+        print('Delete record')
+        del_challenge(domain.id, record.id)
+        print('Delete record ok')
+
+def main():
+    if sys.argv[1] == 'test':
+        test(sys.argv[2])
+    elif sys.argv[1] == 'challenge-dns-start':
+        domain = sys.argv[2]
+        token = sys.argv[4]
+        sub, domain = get_domain_info(domain)
+        record = add_challenge(domain, sub, token)
+        try:
+            with timeout(TIMEOUT):
+                wait_challenge(domain, sub, token)
+        except:
+            del_challenge(domain.id, record.id)
+            raise
+    elif sys.argv[1] == 'challenge-dns-stop':
+        domain = sys.argv[2]
+        token = sys.argv[4]
+        sub, domain = get_domain_info(domain)
+        record = get_record_info(domain.id, sub, token)
+        del_challenge(domain.id, record.id)
+    else:
+        sys.exit(42)
+
+if __name__ == '__main__':
+    main()
