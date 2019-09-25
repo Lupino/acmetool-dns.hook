@@ -2,7 +2,6 @@
 
 from openstack import connection
 
-import requests
 import signal
 import subprocess
 import sys
